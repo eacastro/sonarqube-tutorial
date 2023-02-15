@@ -1,0 +1,178 @@
+COMO INSTALAR SONARQUBE EN CENTOS 7
+------------------------------------
+
+1. Actualizar el sistema:
+---------------------------
+	sudo yum -y install epel-release
+	sudo yum -y update
+	sudo shutdown -r now
+	
+2. Instalar Java 17 (La última versión de SonarQube Server requiere la versión 17)
+----------------------------------------------------------------------------------
+	Instala primero wget o curl: sudo yum -y install wget curl
+	Procede con tu descarga:		
+		wget https://download.java.net/java/GA/jdk17.0.2
+		/d f d 4 a 8 d 0 9 8 5 7 4 9 f 8 9 6 b e d 5 0 d 7 1 3 8 e e 7 f/8/GPL/openjdk-17.0.2_linux-x64_bin.tar.gz
+	Extrae el archivo:
+		tar xvf openjdk-17.0.2_linux-x64_bin.tar.gz
+	
+	Mueve el archivo extraido al directorio /opt:
+		sudo mv jdk-17.0.2/ /opt/jdk-17/
+	
+	Establece las variables de entorno de Java:
+		$ vim ~/.bashrc
+		export JAVA_HOME=/opt/jdk-17
+		export PATH=$PATH:$JAVA_HOME/bin 
+		
+		$ source ~/.bashrc
+	
+	Verifica la instalación de Java
+		$ echo $JAVA_HOME
+		/opt/jdk-17
+
+		$ java --version
+		openjdk 17.0.2 2022-01-18
+		OpenJDK Runtime Environment (build 17.0.2+8-86)
+		OpenJDK 64-Bit Server VM (build 17.0.2+8-86, mixed mode, sharing)
+		
+3. Instalar y configurar PostgreSQL
+	Actualiza el sistema: sudo yum -y update
+	Agrega el repositorio Yum de PostgreSQL: sudo yum install https://download.postgresql.org/pub/repos/yum/reporpms/EL-7-x86_64/pgdg-redhat-repo-latest.noarch.rpm
+	Después de agregar el repositorio yum, instala PostgreSQL Server / Paquetes cliente: sudo yum -y install postgresql11-server postgresql11
+	Confirma el paquete instalado: $ rpm -qi postgresql11-server
+	Inicializa la base de datos: sudo systemctl start postgresql-11 sudo /usr/pgsql-11/bin/postgresql-11-setup initdb
+	Inicia y habilita el servicio para que se ejecute al iniciar: 
+		sudo systemctl start postgresql-11
+		sudo systemctl enable postgresql-11
+	Establece la contraseña del usuario administrador de PostgreSQL: 
+		sudo su - postgres 
+		psql
+		ALTER USER postgres WITH PASSWORD 'the-password-here'
+	Edita el archivo /var/lib/pgsql/9.6/data/pg_hba.conf to activar la autenticación basada en MD5:
+		sudo vim /var/lib/pgsql/9.6/data/pg_hba.conf
+	Busca las secciones "local" "ipv4" e "ipv6" y cambia los valores peer a trust y los valores ident a md5
+	Ingresa a psql con el usuario postgres: sudo su - postgres
+	Crea un nuevo usuario (En el bash): createuser sonar
+	Crea una nueva base de datos PostgreSQL (desde psql): CREATE DATABASE sonar OWNER sonar;
+	
+4. Descarga y configura SonarQube
+-----------------------------------
+	Descarga el archivo comprimido que contiene los archivos de instalacion: wget https://binaries.sonarsource.com/Distribution/sonarqube/sonarqube-9.9.0.65466.zip
+	Instala el programa unzip: sudo yum -y install unzip
+	Extrae el archivo comprimido de sonarqube en el directorio /opt: sudo unzip sonarqube-6.4.zip -d /opt
+	Renombra el directorio: sudo mv /opt/sonarqube-9.9.0.65466 /opt/sonarqube
+	Abre el archivo de configuración de SonarQube usando tu editor preferido: sudo vim /opt/sonarqube/conf/sonar.properties
+	Encuentra las siguientes líneas: #sonar.jdbc.username= y #sonar.jdbc.password=
+	Quita los comentarios y proporciona el nombre de usuario y la contraseña de PostgreSQL de la base de datos que hemos creado antes.
+	Debería verse algo así: 
+		sonar.jdbc.username=sonar
+		sonar.jdbc.password=ContraseniaFuerte
+	Encuentra la siguiente línea: #sonar.jdbc.url=jdbc:postgresql://localhost/sonar
+	Quita el comentario, guarda el archivo y sal del editor.
+	
+5. Configura el servicio Systemd
+---------------------------------
+
+SonarQube puede iniciarse directamente utilizando el script de arranque proporcionado en el paquete de instalación.
+	Por conveniencia, deberías configurar un archivo de unidad Systemd para SonarQube:
+		sudo vim /etc/systemd/system/sonar.service
+	IMPORTANTE: Ten en cuenta que el usuario que ejecuta el servidor de SonarQube debe ser el poseedor del directorio
+	completo donde instalaste SonarQube (Ejemplo: /opt/sonarqube). Para hacer propietario a un usuario del directorio
+	ejecuta el comando chown -R $USER:$USER /opt/sonarqube (donde $USER es el username que necesitas modificar y la ruta 
+	a continuación es donde está instalado SonarQube).
+	Diligencia el archivo con la siguiente información:
+
+		[Unit]
+
+		Description=SonarQube service
+
+		After=syslog.target network.target
+
+
+
+		[Service]
+
+		Type=forking
+
+
+
+		ExecStart=/opt/sonarqube/bin/linux-x86-64/sonar.sh start
+
+		ExecStop=/opt/sonarqube/bin/linux-x86-64/sonar.sh stop
+
+
+
+		User=root
+
+		Group=root
+
+		Restart=always
+
+
+
+		[Install]
+
+		WantedBy=multi-user.target
+		
+	Inicia la aplicación ejecutando: sudo systemctl start sonar
+	Para verificar si el servicio está en ejecución, escribe: sudo systemctl status sonar
+	
+5. Configura el proxy inverso:
+------------------------------
+Por defecto, sonarqube escucha el puerto 9000. En este tutorial usaremos apache como próxy inverso, de manera que la aplicación pueda 
+ser accedida via puerto HTTP.
+    
+		Instala el servidor web Apache ejecutando: sudo yum -y install httpd
+		Crea un nuevo host virtual: sudo vim /etc/httpd/conf.d/sonar.yourdomain.com.conf
+		
+		Escribe el siguiente código en el archivo que creaste:
+			<VirtualHost *:80>  
+
+				ServerName sonar.yourdomain.com
+
+				ServerAdmin me@yourdomain.com
+
+				ProxyPreserveHost On
+
+				ProxyPass / http://localhost:9000/
+
+				ProxyPassReverse / http://localhost:9000/
+
+				TransferLog /var/log/httpd/sonar.yourdomain.com_access.log 
+
+				ErrorLog /var/log/httpd/sonar.yourdomain.com_error.log
+
+			</VirtualHost>
+		
+		
+		Inicia Apache: sudo systemctl start httpd
+		Habilita Apache para que se inicie automaticamente al arrancar: sudo systemctl enable httpd
+		
+6. Configura el firewall:
+-------------------------
+Permite que el puerto HTTP requerido pase a través del firewall del sistema: 
+	sudo firewall-cmd --add-service=http --permanent
+	sudo firewall-cmd --reload
+
+Inicia el servicio de SonarQube:
+	sudo systemctl start sonar
+
+También necesitas desactivar SELinux:
+	sudo setenforce 0
+	
+SonarQube está instalado en tu servidor. Accede al panel principal en la siguiente dirección:
+	http://sonar.tudominio.com (Reemplaza "tudominio" por lo que hayas especificado en el proxy inverso
+
+
+Errata:
+--------
+
+Si instalaste SonarQube 7.1 (O superior) realiza los siguientes cambios ya que las nuevas versiones de Elasticsearch
+no pueden ejecutarse como usuario root.
+	Actualiza los permisos: chown -R sonar:sonar /opt/sonarqube
+	Modifica el archivo /opt/sonarqube/bin/linux-x86-64/sonar.sh, cambia #RUNAS para que sea "sonar"
+	Modifica el archivo /etc/systemd/system/sonar.service, cambia el grupo "user" para que sea "sonar"
+
+		
+	
+	
